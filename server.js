@@ -1,9 +1,15 @@
+// server.js
 const express = require('express');
 const multer = require('multer');
 const csv = require('csv-parser');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+
+// NEW: add compressed file helpers
+const zlib = require('zlib');
+const unzipper = require('unzipper');
+const { pipeline } = require('stream/promises');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,62 +23,117 @@ app.use(express.static('public'));
 let shippingData = [];
 let dataProcessed = false;
 
-// Multer configuration for file uploads
-const storage = multer.diskStorage({
-  destination: './uploads/',
-  filename: (req, file, cb) => {
-    cb(null, 'shipping-data.csv');
-  }
-});
-
-const upload = multer({ storage });
-
 // Ensure uploads directory exists
 if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
 }
 
-// Load CSV data function
-function loadCSVData(filepath) {
-  return new Promise((resolve, reject) => {
+/**
+ * Helper: return the path to the current "shipping-data" file if present,
+ * checking for .csv, .gz, .zip (in that priority order).
+ */
+function getExistingDataPath() {
+  const base = path.resolve('./uploads/shipping-data');
+  const candidates = ['.csv', '.gz', '.zip'].map(ext => base + ext);
+  return candidates.find(p => fs.existsSync(p)) || null;
+}
+
+/**
+ * UPDATED: Load CSV data from plain CSV, .gz, or .zip (first CSV inside).
+ */
+async function loadCSVData(filepath) {
+  return new Promise(async (resolve, reject) => {
     const results = [];
-    fs.createReadStream(filepath)
-      .pipe(csv({
-        mapHeaders: ({ header }) => header.trim()
-      }))
-      .on('data', (data) => {
-        // Clean and parse data
-        Object.keys(data).forEach(key => {
-          if (data[key] === '' || data[key] === 'null') {
-            data[key] = null;
-          }
-        });
-        results.push(data);
-      })
-      .on('end', () => {
-        shippingData = results;
-        dataProcessed = true;
-        console.log(`Loaded ${results.length} records`);
-        resolve(results);
-      })
-      .on('error', reject);
+    let stream;
+
+    try {
+      if (filepath.endsWith('.gz')) {
+        // Gzip -> CSV stream
+        stream = fs.createReadStream(filepath).pipe(zlib.createGunzip());
+      } else if (filepath.endsWith('.zip')) {
+        // Zip -> first .csv entry
+        const directory = await unzipper.Open.file(filepath);
+        const csvFile = directory.files.find(f => f.path.toLowerCase().endsWith('.csv'));
+        if (!csvFile) {
+          reject(new Error('No CSV file found in ZIP'));
+          return;
+        }
+        stream = csvFile.stream();
+      } else {
+        // Plain CSV
+        stream = fs.createReadStream(filepath);
+      }
+
+      stream
+        .pipe(csv({ mapHeaders: ({ header }) => header.trim() }))
+        .on('data', (data) => {
+          // Clean and normalize
+          Object.keys(data).forEach(key => {
+            if (data[key] === '' || data[key] === 'null') data[key] = null;
+          });
+          results.push(data);
+        })
+        .on('end', () => {
+          shippingData = results;
+          dataProcessed = true;
+          console.log(`Loaded ${results.length} records from ${path.basename(filepath)}`);
+          resolve(results);
+        })
+        .on('error', reject);
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
-// Check if CSV exists and load on startup
-const csvPath = './uploads/shipping-data.csv';
-if (fs.existsSync(csvPath)) {
-  loadCSVData(csvPath).catch(console.error);
+// Multer configuration for file uploads
+const storage = multer.diskStorage({
+  destination: './uploads/',
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    // Save deterministically so startup can find it again
+    const allowed = ['.csv', '.gz', '.zip'];
+    const safeExt = allowed.includes(ext) ? ext : '.csv';
+    cb(null, `shipping-data${safeExt}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    // Accept CSV, GZIP, and ZIP files
+    const allowedTypes = ['.csv', '.gz', '.zip'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedTypes.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV, GZ, and ZIP files are allowed'));
+    }
+  },
+  limits: {
+    // 100MB limit for compressed files (raw CSVs usually smaller)
+    fileSize: 100 * 1024 * 1024
+  }
+});
+
+// Check if data exists and load on startup
+const existingPath = getExistingDataPath();
+if (existingPath) {
+  loadCSVData(existingPath).catch(console.error);
 }
 
 // API Routes
 
-// Upload CSV
+// Upload CSV / compressed file
 app.post('/api/upload', upload.single('csvFile'), async (req, res) => {
   try {
+    if (!req.file?.path) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
     await loadCSVData(req.file.path);
     res.json({ success: true, recordCount: shippingData.length });
   } catch (error) {
+    console.error('Upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -92,15 +153,15 @@ app.get('/api/search', (req, res) => {
         return row[field].toLowerCase().includes(query.toLowerCase());
       }
       // Search across multiple fields
-      return Object.values(row).some(val => 
+      return Object.values(row).some(val =>
         val && val.toString().toLowerCase().includes(query.toLowerCase())
       );
     });
   }
 
-  res.json({ 
-    results: results.slice(0, 100), 
-    totalCount: results.length 
+  res.json({
+    results: results.slice(0, 100),
+    totalCount: results.length
   });
 });
 
@@ -112,7 +173,7 @@ app.get('/api/analytics/top-consignees', (req, res) => {
 
   const consigneeCounts = {};
   const consigneeWeights = {};
-  
+
   shippingData.forEach(row => {
     const consignee = row['Consignee'];
     if (consignee && consignee.trim()) {
@@ -126,7 +187,7 @@ app.get('/api/analytics/top-consignees', (req, res) => {
     .map(([name, count]) => ({
       name,
       shipmentCount: count,
-      totalWeight: Math.round(consigneeWeights[name])
+      totalWeight: Math.round(consigneeWeights[name] || 0)
     }))
     .sort((a, b) => b.shipmentCount - a.shipmentCount)
     .slice(0, 20);
@@ -140,11 +201,11 @@ app.get('/api/analytics/trade-lanes', (req, res) => {
   }
 
   const tradeLanes = {};
-  
+
   shippingData.forEach(row => {
     const origin = row['Foreign Port of Lading'];
     const destination = row['US Port of Destination'] || row['US Port of Unlading'];
-    
+
     if (origin && destination) {
       const lane = `${origin} → ${destination}`;
       if (!tradeLanes[lane]) {
@@ -206,11 +267,11 @@ app.get('/api/analytics/carriers', (req, res) => {
 
     carrierStats[carrier].shipmentCount++;
     carrierStats[carrier].weight += parseFloat(row['Weight (kg)']) || 0;
-    
+
     if (row['Consignee']) {
       carrierStats[carrier].consignees.add(row['Consignee']);
     }
-    
+
     const origin = row['Foreign Port of Lading'];
     const destination = row['US Port of Destination'] || row['US Port of Unlading'];
     if (origin && destination) {
@@ -254,7 +315,7 @@ app.get('/api/analytics/commodities', (req, res) => {
 
     commodityStats[commodity].count++;
     commodityStats[commodity].weight += parseFloat(row['Weight (kg)']) || 0;
-    
+
     if (row['Consignee']) {
       commodityStats[commodity].consignees.add(row['Consignee']);
     }
@@ -318,168 +379,33 @@ app.get('/', (req, res) => {
             min-height: 100vh;
             padding: 20px;
         }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        .header {
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        .subtitle {
-            color: #666;
-            font-size: 1.1em;
-        }
-        .upload-section {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        .search-section {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        .search-box {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-        input[type="text"], select {
-            flex: 1;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 16px;
-        }
-        button {
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        button:hover {
-            transform: translateY(-2px);
-        }
-        .analytics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .analytics-card {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        }
-        .analytics-card h3 {
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 1.3em;
-        }
-        .stat-item {
-            padding: 10px;
-            border-bottom: 1px solid #e0e0e0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: background 0.2s;
-        }
-        .stat-item:hover {
-            background: #f5f5f5;
-        }
-        .stat-item:last-child {
-            border-bottom: none;
-        }
-        .stat-label {
-            font-weight: 600;
-            color: #333;
-        }
-        .stat-value {
-            color: #667eea;
-            font-weight: 600;
-        }
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #999;
-        }
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000;
-        }
-        .modal-content {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            max-width: 800px;
-            max-height: 80vh;
-            overflow-y: auto;
-            width: 90%;
-        }
-        .close-modal {
-            float: right;
-            font-size: 28px;
-            cursor: pointer;
-            color: #999;
-        }
-        .close-modal:hover {
-            color: #333;
-        }
-        .clickable {
-            cursor: pointer;
-            text-decoration: underline;
-        }
-        .clickable:hover {
-            color: #764ba2;
-        }
-        #searchResults {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        .result-item {
-            padding: 15px;
-            border-bottom: 1px solid #e0e0e0;
-            background: #f9f9f9;
-            margin-bottom: 10px;
-            border-radius: 8px;
-        }
-        .badge {
-            display: inline-block;
-            padding: 4px 8px;
-            background: #667eea;
-            color: white;
-            border-radius: 4px;
-            font-size: 12px;
-            margin-right: 5px;
-        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); margin-bottom: 30px; }
+        h1 { color: #333; margin-bottom: 10px; font-size: 2.5em; }
+        .subtitle { color: #666; font-size: 1.1em; }
+        .upload-section, .search-section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 30px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; }
+        input[type="text"], select { flex: 1; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; }
+        button { padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; transition: transform 0.2s; }
+        button:hover { transform: translateY(-2px); }
+        .analytics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .analytics-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .analytics-card h3 { color: #333; margin-bottom: 15px; font-size: 1.3em; }
+        .stat-item { padding: 10px; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center; transition: background 0.2s; }
+        .stat-item:hover { background: #f5f5f5; }
+        .stat-item:last-child { border-bottom: none; }
+        .stat-label { font-weight: 600; color: #333; }
+        .stat-value { color: #667eea; font-weight: 600; }
+        .loading { text-align: center; padding: 40px; color: #999; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 15px; max-width: 800px; max-height: 80vh; overflow-y: auto; width: 90%; }
+        .close-modal { float: right; font-size: 28px; cursor: pointer; color: #999; }
+        .close-modal:hover { color: #333; }
+        .clickable { cursor: pointer; text-decoration: underline; }
+        .clickable:hover { color: #764ba2; }
+        #searchResults { max-height: 400px; overflow-y: auto; }
+        .result-item { padding: 15px; border-bottom: 1px solid #e0e0e0; background: #f9f9f9; margin-bottom: 10px; border-radius: 8px; }
+        .badge { display: inline-block; padding: 4px 8px; background: #667eea; color: white; border-radius: 4px; font-size: 12px; margin-right: 5px; }
     </style>
 </head>
 <body>
@@ -491,7 +417,8 @@ app.get('/', (req, res) => {
 
         <div class="upload-section">
             <h3>Upload CSV Data</h3>
-            <input type="file" id="csvFile" accept=".csv">
+            <!-- TIP: change accept to .csv,.gz,.zip if desired -->
+            <input type="file" id="csvFile" accept=".csv,.gz,.zip">
             <button onclick="uploadCSV()">Upload & Process</button>
             <span id="uploadStatus"></span>
         </div>
@@ -548,7 +475,7 @@ app.get('/', (req, res) => {
             const fileInput = document.getElementById('csvFile');
             const file = fileInput.files[0];
             if (!file) {
-                alert('Please select a CSV file');
+                alert('Please select a file (.csv, .gz, or .zip)');
                 return;
             }
 
@@ -564,6 +491,7 @@ app.get('/', (req, res) => {
                     body: formData
                 });
                 const result = await response.json();
+                if (!response.ok) throw new Error(result.error || 'Upload failed');
                 statusEl.textContent = \`Successfully loaded \${result.recordCount} records\`;
                 loadAnalytics();
             } catch (error) {
@@ -574,10 +502,10 @@ app.get('/', (req, res) => {
         async function searchRecords() {
             const query = document.getElementById('searchQuery').value;
             const field = document.getElementById('searchField').value;
-            
+
             const response = await fetch(\`/api/search?query=\${encodeURIComponent(query)}&field=\${field}\`);
             const data = await response.json();
-            
+
             const resultsDiv = document.getElementById('searchResults');
             if (data.results && data.results.length > 0) {
                 resultsDiv.innerHTML = \`
@@ -666,7 +594,7 @@ app.get('/', (req, res) => {
         async function showConsigneeDetail(consigneeName) {
             const response = await fetch(\`/api/consignee/\${consigneeName}\`);
             const data = await response.json();
-            
+
             const modalContent = document.getElementById('modalContent');
             modalContent.innerHTML = \`
                 <h2>\${data.name}</h2>
@@ -687,7 +615,7 @@ app.get('/', (req, res) => {
                     \${data.ports.slice(0, 10).map(p => \`<span class="badge">\${p}</span>\`).join('')}
                 </div>
             \`;
-            
+
             document.getElementById('detailModal').style.display = 'block';
         }
 
@@ -709,6 +637,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(\`Server running on port \${PORT}\`);
-  console.log(\`Visit http://localhost:\${PORT} to access the dashboard\`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Visit http://localhost:${PORT} to access the dashboard`);
 });
