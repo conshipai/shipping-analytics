@@ -13,11 +13,20 @@ const { pipeline } = require('stream/promises');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    dataLoaded: dataProcessed,
+    recordCount: shippingData.length 
+  });
+});
 
 // Storage for CSV data
 let shippingData = [];
@@ -636,7 +645,10 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Visit http://localhost:${PORT} to access the dashboard`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+  console.log(`Health check available at http://${HOST}:${PORT}/health`);
+  if (dataProcessed) {
+    console.log(`Data loaded: ${shippingData.length} records`);
+  }
 });
