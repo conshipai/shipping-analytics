@@ -1,0 +1,19 @@
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Data files - Don't commit these!
+*.csv
+*.zip
+*.gz
+uploads/
+
+# Environment files
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
