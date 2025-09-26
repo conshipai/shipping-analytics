@@ -1,32 +1,20 @@
-// server.js
 const express = require('express');
 const multer = require('multer');
 const csv = require('csv-parser');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
-
-// NEW: add compressed file helpers
 const zlib = require('zlib');
 const unzipper = require('unzipper');
-const { pipeline } = require('stream/promises');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
+const HOST = '0.0.0.0';  // Important for Docker!
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
-
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy', 
-    dataLoaded: dataProcessed,
-    recordCount: shippingData.length 
-  });
-});
 
 // Storage for CSV data
 let shippingData = [];
@@ -37,19 +25,23 @@ if (!fs.existsSync('./uploads')) {
   fs.mkdirSync('./uploads');
 }
 
-/**
- * Helper: return the path to the current "shipping-data" file if present,
- * checking for .csv, .gz, .zip (in that priority order).
- */
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    dataLoaded: dataProcessed,
+    recordCount: shippingData.length 
+  });
+});
+
+// Helper: return the path to the current "shipping-data" file if present
 function getExistingDataPath() {
   const base = path.resolve('./uploads/shipping-data');
   const candidates = ['.csv', '.gz', '.zip'].map(ext => base + ext);
   return candidates.find(p => fs.existsSync(p)) || null;
 }
 
-/**
- * UPDATED: Load CSV data from plain CSV, .gz, or .zip (first CSV inside).
- */
+// Load CSV data from plain CSV, .gz, or .zip
 async function loadCSVData(filepath) {
   return new Promise(async (resolve, reject) => {
     const results = [];
@@ -100,7 +92,6 @@ const storage = multer.diskStorage({
   destination: './uploads/',
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    // Save deterministically so startup can find it again
     const allowed = ['.csv', '.gz', '.zip'];
     const safeExt = allowed.includes(ext) ? ext : '.csv';
     cb(null, `shipping-data${safeExt}`);
@@ -110,7 +101,6 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (req, file, cb) => {
-    // Accept CSV, GZIP, and ZIP files
     const allowedTypes = ['.csv', '.gz', '.zip'];
     const ext = path.extname(file.originalname).toLowerCase();
     if (allowedTypes.includes(ext)) {
@@ -120,8 +110,7 @@ const upload = multer({
     }
   },
   limits: {
-    // 100MB limit for compressed files (raw CSVs usually smaller)
-    fileSize: 100 * 1024 * 1024
+    fileSize: 100 * 1024 * 1024 // 100MB limit
   }
 });
 
@@ -161,7 +150,6 @@ app.get('/api/search', (req, res) => {
       if (field && row[field]) {
         return row[field].toLowerCase().includes(query.toLowerCase());
       }
-      // Search across multiple fields
       return Object.values(row).some(val =>
         val && val.toString().toLowerCase().includes(query.toLowerCase())
       );
@@ -174,7 +162,7 @@ app.get('/api/search', (req, res) => {
   });
 });
 
-// Analytics endpoints
+// Top consignees
 app.get('/api/analytics/top-consignees', (req, res) => {
   if (!dataProcessed) {
     return res.status(400).json({ error: 'No data loaded' });
@@ -204,6 +192,7 @@ app.get('/api/analytics/top-consignees', (req, res) => {
   res.json(topConsignees);
 });
 
+// Trade lanes
 app.get('/api/analytics/trade-lanes', (req, res) => {
   if (!dataProcessed) {
     return res.status(400).json({ error: 'No data loaded' });
@@ -246,6 +235,7 @@ app.get('/api/analytics/trade-lanes', (req, res) => {
   res.json(topLanes);
 });
 
+// Carriers
 app.get('/api/analytics/carriers', (req, res) => {
   if (!dataProcessed) {
     return res.status(400).json({ error: 'No data loaded' });
@@ -302,6 +292,7 @@ app.get('/api/analytics/carriers', (req, res) => {
   res.json(topCarriers);
 });
 
+// Commodities
 app.get('/api/analytics/commodities', (req, res) => {
   if (!dataProcessed) {
     return res.status(400).json({ error: 'No data loaded' });
@@ -347,7 +338,7 @@ app.get('/api/analytics/commodities', (req, res) => {
   res.json(topCommodities);
 });
 
-// Consignee detail endpoint
+// Consignee detail
 app.get('/api/consignee/:name', (req, res) => {
   if (!dataProcessed) {
     return res.status(400).json({ error: 'No data loaded' });
@@ -373,7 +364,7 @@ app.get('/api/consignee/:name', (req, res) => {
   res.json(stats);
 });
 
-// Serve HTML interface
+// Main HTML interface
 app.get('/', (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -415,6 +406,7 @@ app.get('/', (req, res) => {
         #searchResults { max-height: 400px; overflow-y: auto; }
         .result-item { padding: 15px; border-bottom: 1px solid #e0e0e0; background: #f9f9f9; margin-bottom: 10px; border-radius: 8px; }
         .badge { display: inline-block; padding: 4px 8px; background: #667eea; color: white; border-radius: 4px; font-size: 12px; margin-right: 5px; }
+        .info-note { background: #f0f8ff; border-left: 4px solid #667eea; padding: 10px; margin: 10px 0; }
     </style>
 </head>
 <body>
@@ -426,7 +418,7 @@ app.get('/', (req, res) => {
 
         <div class="upload-section">
             <h3>Upload CSV Data</h3>
-            <!-- TIP: change accept to .csv,.gz,.zip if desired -->
+            <div class="info-note">Accepts .csv, .gz (gzipped CSV), or .zip files up to 100MB</div>
             <input type="file" id="csvFile" accept=".csv,.gz,.zip">
             <button onclick="uploadCSV()">Upload & Process</button>
             <span id="uploadStatus"></span>
@@ -645,6 +637,7 @@ app.get('/', (req, res) => {
   `);
 });
 
+// FIXED: Listen on 0.0.0.0 for Docker
 app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);
   console.log(`Health check available at http://${HOST}:${PORT}/health`);
