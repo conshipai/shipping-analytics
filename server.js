@@ -644,17 +644,24 @@ app.get('/', (req, res) => {
         }
         .nav-tab {
             padding: 8px 16px;
-            background: none;
-            border: 2px solid transparent;
+            background: white;
+            border: 2px solid #667eea;
+            color: #667eea;
             border-radius: 8px;
             cursor: pointer;
             font-size: 16px;
+            font-weight: 600;
             transition: all 0.3s;
         }
-        .nav-tab:hover { background: #f5f5f5; }
-        .nav-tab.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                .nav-tab:hover { 
+            background: #667eea;
             color: white;
+            transform: translateY(-2px);
+        }
+        .nav-tab.active {
+            background: #667eea;
+            color: white;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
         }
         .container { max-width: 1400px; margin: 20px auto; padding: 0 20px; }
         .content-section { display: none; }
@@ -763,22 +770,22 @@ app.get('/', (req, res) => {
         
         /* Original styles */
         button {
-            padding: 12px 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        button:hover { transform: translateY(-2px); }
-        .analytics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
+    padding: 12px 24px;
+    background: #667eea;
+    color: white !important;
+    border: 2px solid #667eea;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+button:hover {
+    background: #5568d3;
+    border-color: #5568d3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
         .analytics-card {
             background: white;
             padding: 20px;
