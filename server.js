@@ -643,26 +643,26 @@ app.get('/', (req, res) => {
             gap: 20px;
         }
         .nav-tab {
-            padding: 8px 16px;
-            background: white;
-            border: 2px solid #667eea;
-            color: #667eea;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: all 0.3s;
-        }
-                .nav-tab:hover { 
-            background: #667eea;
-            color: white;
-            transform: translateY(-2px);
-        }
-        .nav-tab.active {
-            background: #667eea;
-            color: white;
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
+    padding: 8px 16px;
+    background: white !important;
+    border: 2px solid #667eea !important;
+    color: #667eea !important;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 600;
+    transition: all 0.3s;
+}
+.nav-tab:hover { 
+    background: #667eea !important;
+    color: white !important;
+    transform: translateY(-2px);
+}
+.nav-tab.active {
+    background: #667eea !important;
+    color: white !important;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
         .container { max-width: 1400px; margin: 20px auto; padding: 0 20px; }
         .content-section { display: none; }
         .content-section.active { display: block; }
